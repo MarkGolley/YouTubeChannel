@@ -81,9 +81,10 @@ Quality mode switch:
 - `RUN_PROFILE=draft` for fast iteration
 - `RUN_PROFILE=production` for final output
 - CLI flags override env: `--draft` or `--production`
-- On-screen text overlay is off by default (`VIDEO_OVERLAY_TEXT_ENABLED=false`)
+- Timed on-screen cue text is on by default (`VIDEO_OVERLAY_TEXT_ENABLED=true`)
 - Branded spoken intro is enabled by default via `CHANNEL_INTRO_TEXT`
 - When intro is enabled, the first scene is a branded intro card using `CHANNEL_NAME`
+- Stock video clips are used without replay loops; when clips run out, the renderer falls back to new images/backgrounds
 
 ## Stock Footage Folder (`assets/stock`)
 

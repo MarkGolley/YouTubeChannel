@@ -83,7 +83,7 @@ class Settings:
     pexels_images_per_fetch: int = 6
     pexels_timeout_seconds: int = 30
     run_profile: str = "production"
-    video_overlay_text_enabled: bool = False
+    video_overlay_text_enabled: bool = True
     channel_name: str = "Curiosity Signal"
     channel_intro_enabled: bool = True
     channel_intro_text: str = (
@@ -161,7 +161,7 @@ class Settings:
             pexels_images_per_fetch=_int_env("PEXELS_IMAGES_PER_FETCH", 6),
             pexels_timeout_seconds=_int_env("PEXELS_TIMEOUT_SECONDS", 30),
             run_profile=os.getenv("RUN_PROFILE", "production"),
-            video_overlay_text_enabled=_bool_env("VIDEO_OVERLAY_TEXT_ENABLED", False),
+            video_overlay_text_enabled=_bool_env("VIDEO_OVERLAY_TEXT_ENABLED", True),
             channel_name=os.getenv("CHANNEL_NAME", "Curiosity Signal"),
             channel_intro_enabled=_bool_env("CHANNEL_INTRO_ENABLED", True),
             channel_intro_text=os.getenv(

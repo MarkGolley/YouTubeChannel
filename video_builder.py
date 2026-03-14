@@ -27,6 +27,7 @@ class VideoBuilder:
         self.logger = logger
         self.is_draft = self.settings.run_profile == "draft"
         self.overlay_text_enabled = bool(self.settings.video_overlay_text_enabled)
+        self.scene_change_seconds = 6.0 if self.is_draft else 8.0
         self.frame_size = (self.settings.render_width, self.settings.render_height)
         self.margin = max(24, int(self.frame_size[0] * 0.05))
         self.subtitle_font_size = max(28, int(self.frame_size[1] * 0.043))
@@ -69,12 +70,18 @@ class VideoBuilder:
         audio_clip = AudioFileClip(str(audio_path))
         video_clip = None
         heartbeat_stop = None
+        used_video_files: set[Path] = set()
+        used_image_files: set[Path] = set()
         try:
             section_durations = self._allocate_section_durations(
                 total_duration=audio_clip.duration,
                 section_texts=[f"{header}. {body}" for header, body in sections],
             )
-            scenes = self._expand_scenes(sections=sections, durations=section_durations)
+            scenes = self._expand_scenes(
+                sections=sections,
+                durations=section_durations,
+                max_scene_seconds=self.scene_change_seconds,
+            )
             total_sections = len(scenes)
             for idx, scene in enumerate(scenes, start=1):
                 header = scene["header"]
@@ -90,6 +97,8 @@ class VideoBuilder:
                     stock_images_topic=topic_images,
                     stock_images_fallback=global_images,
                     render_dir=render_dir,
+                    used_video_files=used_video_files,
+                    used_image_files=used_image_files,
                 )
 
                 overlay_clips = self._build_section_overlays(
@@ -157,17 +166,35 @@ class VideoBuilder:
         if not self.overlay_text_enabled:
             return []
 
-        cue_text = self._section_cue_text(header=header, body=body)
-        if not cue_text:
+        cue_source = self._section_cue_text(header=header, body=body)
+        if not cue_source:
             return []
-        subtitle_path = self._render_subtitle_card(
-            index=index,
-            chunk_index=0,
-            text=cue_text,
-            render_dir=render_dir,
-        )
-        overlay_duration = min(max(1.2, duration * 0.3), 2.2)
-        return [ImageClip(str(subtitle_path)).with_duration(overlay_duration)]
+        cue_chunks = self._split_caption_chunks(cue_source, target_words=7)
+        if not cue_chunks:
+            return []
+
+        clips = []
+        max_chunks = min(2, len(cue_chunks))
+        base_duration = min(2.8, max(1.4, duration * 0.3))
+        starts = [max(0.2, duration * 0.1), max(0.5, duration * 0.56)]
+        for chunk_idx in range(max_chunks):
+            start_t = starts[min(chunk_idx, len(starts) - 1)]
+            remaining = duration - start_t - 0.1
+            if remaining <= 0.6:
+                continue
+            chunk_duration = min(base_duration, remaining)
+            subtitle_path = self._render_subtitle_card(
+                index=index,
+                chunk_index=chunk_idx,
+                text=cue_chunks[chunk_idx],
+                render_dir=render_dir,
+            )
+            clips.append(
+                ImageClip(str(subtitle_path))
+                .with_start(start_t)
+                .with_duration(chunk_duration)
+            )
+        return clips
 
     def _make_base_clip(
         self,
@@ -180,6 +207,8 @@ class VideoBuilder:
         stock_images_topic: list[Path],
         stock_images_fallback: list[Path],
         render_dir: Path,
+        used_video_files: set[Path],
+        used_image_files: set[Path],
     ):
         if scene_header.strip().lower().startswith("intro"):
             intro_card_path = self._render_intro_card(render_dir)
@@ -192,52 +221,149 @@ class VideoBuilder:
         preferred_images = stock_images_topic or stock_images_fallback
 
         if preferred_videos:
-            stock_file = self._pick_related_file(preferred_videos, scene_text)
-            try:
-                clip = VideoFileClip(str(stock_file)).without_audio().resized(new_size=self.frame_size)
-                if clip.duration < duration:
-                    clip = clip.with_effects([vfx.Loop(duration=duration)])
-                else:
-                    max_start = max(0.0, clip.duration - duration)
-                    start = random.uniform(0.0, max_start) if max_start > 0.0 else 0.0
-                    clip = clip.subclipped(start, start + duration)
-                if not self.is_draft:
-                    clip = clip.with_duration(duration).with_effects(
-                        [vfx.Resize(lambda t: 1.02 + 0.04 * (t / max(duration, 0.01)))]
-                    )
-                else:
-                    clip = clip.with_duration(duration)
-                return clip
-            except Exception:
-                self.logger.exception("stock_footage_failed", extra={"file": str(stock_file)})
+            video_scene = self._build_video_scene_clip(
+                duration=duration,
+                scene_text=scene_text,
+                preferred_videos=preferred_videos,
+                preferred_images=preferred_images,
+                used_video_files=used_video_files,
+                used_image_files=used_image_files,
+                index=index,
+                render_dir=render_dir,
+            )
+            if video_scene is not None:
+                return video_scene
 
-        if self.is_draft and preferred_images:
-            stock_image = self._pick_related_file(preferred_images, scene_text)
-            try:
-                return ImageClip(str(stock_image)).resized(new_size=self.frame_size).with_duration(duration).with_position("center")
-            except Exception:
-                self.logger.exception("stock_image_failed", extra={"file": str(stock_image)})
-
-        if preferred_images:
-            stock_image = self._pick_related_file(preferred_images, scene_text)
-            try:
-                clip = ImageClip(str(stock_image)).resized(new_size=self.frame_size).with_duration(duration)
-                if self.is_draft:
-                    return clip.with_position("center")
-                start_scale = random.uniform(1.03, 1.08)
-                end_scale = random.uniform(1.10, 1.16)
-                return (
-                    clip.with_effects([vfx.Resize(lambda t: start_scale + (end_scale - start_scale) * (t / max(duration, 0.01)))])
-                    .with_position("center")
-                )
-            except Exception:
-                self.logger.exception("stock_image_failed", extra={"file": str(stock_image)})
+        image_scene = self._build_image_scene_clip(
+            duration=duration,
+            scene_text=scene_text,
+            preferred_images=preferred_images,
+            used_image_files=used_image_files,
+        )
+        if image_scene is not None:
+            return image_scene
 
         bg_path = self._render_background_image(index, render_dir)
         clip = ImageClip(str(bg_path)).with_duration(duration).with_position("center")
         if self.is_draft:
             return clip
         return clip.with_effects([vfx.Resize(lambda t: 1.01 + 0.04 * (t / max(duration, 0.01)))])
+
+    def _build_video_scene_clip(
+        self,
+        duration: float,
+        scene_text: str,
+        preferred_videos: list[Path],
+        preferred_images: list[Path],
+        used_video_files: set[Path],
+        used_image_files: set[Path],
+        index: int,
+        render_dir: Path,
+    ):
+        ranked_videos = self._rank_related_files(
+            files=preferred_videos,
+            scene_text=scene_text,
+            used_files=used_video_files,
+        )
+        if not ranked_videos:
+            self.logger.info("scene_media_videos_exhausted")
+            return None
+
+        segments = []
+        chosen_video_files: list[str] = []
+        remaining = duration
+        for stock_file in ranked_videos:
+            if remaining <= 0.2:
+                break
+            try:
+                source_clip = VideoFileClip(str(stock_file)).without_audio().resized(new_size=self.frame_size)
+                available = max(0.0, source_clip.duration)
+                if available <= 0.2:
+                    source_clip.close()
+                    continue
+                take = min(available, remaining)
+                max_start = max(0.0, available - take)
+                start = random.uniform(0.0, max_start) if max_start > 0.0 else 0.0
+                segment = source_clip.subclipped(start, start + take).with_duration(take)
+                if not self.is_draft:
+                    start_scale = random.uniform(1.0, 1.03)
+                    end_scale = random.uniform(1.03, 1.08)
+                    segment = segment.with_effects(
+                        [vfx.Resize(lambda t: start_scale + (end_scale - start_scale) * (t / max(take, 0.01)))]
+                    )
+                segments.append(segment)
+                used_video_files.add(stock_file.resolve())
+                chosen_video_files.append(stock_file.name)
+                remaining -= take
+            except Exception:
+                self.logger.exception("stock_footage_failed", extra={"file": str(stock_file)})
+
+        if remaining > 0.3:
+            image_filler = self._build_image_scene_clip(
+                duration=remaining,
+                scene_text=scene_text,
+                preferred_images=preferred_images,
+                used_image_files=used_image_files,
+            )
+            if image_filler is not None:
+                segments.append(image_filler)
+                remaining = 0.0
+
+        if remaining > 0.3:
+            bg_path = self._render_background_image(index + 1000, render_dir)
+            segments.append(ImageClip(str(bg_path)).with_duration(remaining).with_position("center"))
+
+        if not segments:
+            return None
+        self.logger.info(
+            "scene_media_selected",
+            extra={
+                "media_kind": "video_montage",
+                "video_files": chosen_video_files,
+                "segments": len(segments),
+            },
+        )
+        if len(segments) == 1:
+            return segments[0].with_duration(duration)
+        return concatenate_videoclips(segments, method="compose").with_duration(duration)
+
+    def _build_image_scene_clip(
+        self,
+        duration: float,
+        scene_text: str,
+        preferred_images: list[Path],
+        used_image_files: set[Path],
+    ):
+        if not preferred_images:
+            return None
+        stock_image = self._pick_related_file(
+            files=preferred_images,
+            scene_text=scene_text,
+            used_files=used_image_files,
+        )
+        if stock_image is None:
+            self.logger.info("scene_media_images_exhausted")
+            return None
+        try:
+            clip = ImageClip(str(stock_image)).resized(new_size=self.frame_size).with_duration(duration)
+            self.logger.info(
+                "scene_media_selected",
+                extra={
+                    "media_kind": "image",
+                    "image_file": stock_image.name,
+                },
+            )
+            if self.is_draft:
+                return clip.with_position("center")
+            start_scale = random.uniform(1.03, 1.08)
+            end_scale = random.uniform(1.10, 1.16)
+            return (
+                clip.with_effects([vfx.Resize(lambda t: start_scale + (end_scale - start_scale) * (t / max(duration, 0.01)))])
+                .with_position("center")
+            )
+        except Exception:
+            self.logger.exception("stock_image_failed", extra={"file": str(stock_image)})
+            return None
 
     def _discover_stock_videos(self, topic: str) -> tuple[list[Path], list[Path]]:
         topic_dir = self._topic_dir(topic)
@@ -431,30 +557,62 @@ class VideoBuilder:
         text = body.strip()
         if not text:
             return ""
-        first_sentence = text.split(".")[0].strip()
-        words = first_sentence.split()
-        short = " ".join(words[:8]) if words else first_sentence
+        sentences = [part.strip() for part in text.replace("!", ".").replace("?", ".").split(".") if part.strip()]
+        source = " ".join(sentences[:2]) if sentences else text
+        words = source.split()
+        short = " ".join(words[:18]) if words else source
         # Remove structure words if present.
         lower_header = header.strip().lower()
         if lower_header.startswith("fact") or lower_header in {"hook", "conclusion"}:
             return short
         return f"{short}"
 
-    def _pick_related_file(self, files: list[Path], scene_text: str) -> Path:
-        if not files:
-            raise ValueError("No files available to select from.")
+    def _pick_related_file(
+        self,
+        files: list[Path],
+        scene_text: str,
+        used_files: set[Path] | None = None,
+        allow_reuse_when_exhausted: bool = False,
+    ) -> Path | None:
+        ranked = self._rank_related_files(files, scene_text, used_files, allow_reuse_when_exhausted)
+        if not ranked:
+            return None
+        selected = ranked[0]
+        if used_files is not None:
+            used_files.add(selected.resolve())
+        return selected
+
+    def _rank_related_files(
+        self,
+        files: list[Path],
+        scene_text: str,
+        used_files: set[Path] | None = None,
+        allow_reuse_when_exhausted: bool = False,
+    ) -> list[Path]:
+        candidates = [file for file in files if file.exists()]
+        if not candidates:
+            return []
+        if used_files is not None:
+            unused = [file for file in candidates if file.resolve() not in used_files]
+            if unused:
+                candidates = unused
+            elif not allow_reuse_when_exhausted:
+                return []
+
         scene_tokens = self._tokenize(scene_text)
         if not scene_tokens:
-            return random.choice(files)
+            ranked = candidates[:]
+            random.shuffle(ranked)
+            return ranked
 
         scored = []
-        for file in files:
+        for file in candidates:
             file_tokens = self._tokenize(file.stem.replace("__", " "))
             overlap = len(scene_tokens.intersection(file_tokens))
             score = overlap + random.random() * 0.01
             scored.append((score, file))
         scored.sort(key=lambda item: item[0], reverse=True)
-        return scored[0][1]
+        return [item[1] for item in scored]
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
@@ -471,9 +629,12 @@ class VideoBuilder:
         return sections
 
     @staticmethod
-    def _expand_scenes(sections: list[tuple[str, str]], durations: list[float]) -> list[dict]:
+    def _expand_scenes(
+        sections: list[tuple[str, str]],
+        durations: list[float],
+        max_scene_seconds: float,
+    ) -> list[dict]:
         scenes: list[dict] = []
-        max_scene_seconds = 12.0
         for (header, body), section_duration in zip(sections, durations):
             chunk_count = max(1, int((section_duration + max_scene_seconds - 0.01) // max_scene_seconds))
             chunks = VideoBuilder._split_text_for_chunks(body, chunk_count)
