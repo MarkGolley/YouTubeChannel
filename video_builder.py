@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import threading
 import time
@@ -24,11 +25,12 @@ class VideoBuilder:
     def __init__(self, settings: Settings, logger):
         self.settings = settings
         self.logger = logger
+        self.is_draft = self.settings.run_profile == "draft"
+        self.overlay_text_enabled = bool(self.settings.video_overlay_text_enabled)
         self.frame_size = (self.settings.render_width, self.settings.render_height)
         self.margin = max(24, int(self.frame_size[0] * 0.05))
-        self.title_font_size = max(34, int(self.frame_size[1] * 0.055))
         self.subtitle_font_size = max(28, int(self.frame_size[1] * 0.043))
-        self.tag_font_size = max(24, int(self.frame_size[1] * 0.03))
+        self.encode_threads = min(8, max(2, os.cpu_count() or 4))
 
     def build_video(self, script_package: ScriptPackage, audio_path: Path) -> Path:
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -40,14 +42,18 @@ class VideoBuilder:
             (f"Fact {idx}", fact) for idx, fact in enumerate(script_package.facts, start=1)
         ] + [("Conclusion", script_package.conclusion)]
 
-        stock_videos = self._discover_stock_videos()
-        stock_images = self._discover_stock_images()
+        topic_videos, global_videos = self._discover_stock_videos(script_package.topic)
+        topic_images, global_images = self._discover_stock_images(script_package.topic)
+        stock_videos = topic_videos + global_videos
+        stock_images = topic_images + global_images
         self.logger.info(
             "video_build_started",
             extra={
                 "audio_path": str(audio_path),
-                "stock_videos": len(stock_videos),
-                "stock_images": len(stock_images),
+                "stock_videos_topic": len(topic_videos),
+                "stock_images_topic": len(topic_images),
+                "stock_videos_fallback": len(global_videos),
+                "stock_images_fallback": len(global_images),
             },
         )
         if not stock_videos and stock_images:
@@ -66,17 +72,24 @@ class VideoBuilder:
         video_clip = None
         heartbeat_stop = None
         try:
-            durations = self._allocate_section_durations(
+            section_durations = self._allocate_section_durations(
                 total_duration=audio_clip.duration,
                 section_texts=[f"{header}. {body}" for header, body in sections],
             )
-            total_sections = len(sections)
-            for idx, ((header, body), section_duration) in enumerate(zip(sections, durations), start=1):
+            scenes = self._expand_scenes(sections=sections, durations=section_durations)
+            total_sections = len(scenes)
+            for idx, scene in enumerate(scenes, start=1):
+                header = scene["header"]
+                body = scene["body"]
+                section_duration = float(scene["duration"])
                 base_clip = self._make_base_clip(
                     index=idx - 1,
                     duration=section_duration,
-                    stock_videos=stock_videos,
-                    stock_images=stock_images,
+                    scene_text=body,
+                    stock_videos_topic=topic_videos,
+                    stock_videos_fallback=global_videos,
+                    stock_images_topic=topic_images,
+                    stock_images_fallback=global_images,
                     render_dir=render_dir,
                 )
 
@@ -114,7 +127,7 @@ class VideoBuilder:
                 fps=self.settings.video_fps,
                 codec="libx264",
                 audio_codec="aac",
-                threads=4,
+                threads=self.encode_threads,
                 preset=self.settings.video_preset,
                 temp_audiofile=str(render_dir / "temp-audio.m4a"),
                 remove_temp=True,
@@ -140,41 +153,37 @@ class VideoBuilder:
         duration: float,
         render_dir: Path,
     ) -> list:
-        overlay_clips = []
+        if not self.overlay_text_enabled:
+            return []
 
-        label_path = self._render_header_label(index=index, header=header, render_dir=render_dir)
-        overlay_clips.append(ImageClip(str(label_path)).with_duration(duration))
-
-        chunks = self._split_caption_chunks(body, target_words=8)
-        if not chunks:
-            chunks = [body]
-        chunk_duration = max(0.8, duration / len(chunks))
-        for chunk_idx, chunk in enumerate(chunks):
-            subtitle_path = self._render_subtitle_card(
-                index=index,
-                chunk_index=chunk_idx,
-                text=chunk,
-                render_dir=render_dir,
-            )
-            clip = (
-                ImageClip(str(subtitle_path))
-                .with_start(chunk_idx * chunk_duration)
-                .with_duration(chunk_duration + 0.05)
-            )
-            overlay_clips.append(clip)
-
-        return overlay_clips
+        cue_text = self._section_cue_text(header=header, body=body)
+        if not cue_text:
+            return []
+        subtitle_path = self._render_subtitle_card(
+            index=index,
+            chunk_index=0,
+            text=cue_text,
+            render_dir=render_dir,
+        )
+        overlay_duration = min(max(1.2, duration * 0.3), 2.2)
+        return [ImageClip(str(subtitle_path)).with_duration(overlay_duration)]
 
     def _make_base_clip(
         self,
         index: int,
         duration: float,
-        stock_videos: list[Path],
-        stock_images: list[Path],
+        scene_text: str,
+        stock_videos_topic: list[Path],
+        stock_videos_fallback: list[Path],
+        stock_images_topic: list[Path],
+        stock_images_fallback: list[Path],
         render_dir: Path,
     ):
-        if stock_videos:
-            stock_file = random.choice(stock_videos)
+        preferred_videos = stock_videos_topic or stock_videos_fallback
+        preferred_images = stock_images_topic or stock_images_fallback
+
+        if preferred_videos:
+            stock_file = self._pick_related_file(preferred_videos, scene_text)
             try:
                 clip = VideoFileClip(str(stock_file)).without_audio().resized(new_size=self.frame_size)
                 if clip.duration < duration:
@@ -183,44 +192,51 @@ class VideoBuilder:
                     max_start = max(0.0, clip.duration - duration)
                     start = random.uniform(0.0, max_start) if max_start > 0.0 else 0.0
                     clip = clip.subclipped(start, start + duration)
-                clip = clip.with_duration(duration).with_effects(
-                    [vfx.Resize(lambda t: 1.02 + 0.04 * (t / max(duration, 0.01)))]
-                )
+                if not self.is_draft:
+                    clip = clip.with_duration(duration).with_effects(
+                        [vfx.Resize(lambda t: 1.02 + 0.04 * (t / max(duration, 0.01)))]
+                    )
+                else:
+                    clip = clip.with_duration(duration)
                 return clip
             except Exception:
                 self.logger.exception("stock_footage_failed", extra={"file": str(stock_file)})
 
-        if stock_images:
-            stock_image = random.choice(stock_images)
+        if self.is_draft and preferred_images:
+            stock_image = self._pick_related_file(preferred_images, scene_text)
+            try:
+                return ImageClip(str(stock_image)).resized(new_size=self.frame_size).with_duration(duration).with_position("center")
+            except Exception:
+                self.logger.exception("stock_image_failed", extra={"file": str(stock_image)})
+
+        if preferred_images:
+            stock_image = self._pick_related_file(preferred_images, scene_text)
             try:
                 clip = ImageClip(str(stock_image)).resized(new_size=self.frame_size).with_duration(duration)
+                if self.is_draft:
+                    return clip.with_position("center")
                 start_scale = random.uniform(1.03, 1.08)
                 end_scale = random.uniform(1.10, 1.16)
-                return clip.with_effects(
-                    [vfx.Resize(lambda t: start_scale + (end_scale - start_scale) * (t / max(duration, 0.01)))]
-                ).with_position("center")
+                return (
+                    clip.with_effects([vfx.Resize(lambda t: start_scale + (end_scale - start_scale) * (t / max(duration, 0.01)))])
+                    .with_position("center")
+                )
             except Exception:
                 self.logger.exception("stock_image_failed", extra={"file": str(stock_image)})
 
         bg_path = self._render_background_image(index, render_dir)
         clip = ImageClip(str(bg_path)).with_duration(duration).with_position("center")
+        if self.is_draft:
+            return clip
         return clip.with_effects([vfx.Resize(lambda t: 1.01 + 0.04 * (t / max(duration, 0.01)))])
 
-    def _discover_stock_videos(self) -> list[Path]:
-        if not self.settings.stock_footage_dir.exists():
-            return []
-        files = []
-        for pattern in ("*.mp4", "*.mov", "*.mkv"):
-            files.extend(self.settings.stock_footage_dir.glob(pattern))
-        return sorted(files)
+    def _discover_stock_videos(self, topic: str) -> tuple[list[Path], list[Path]]:
+        topic_dir = self._topic_dir(topic)
+        return self._topic_and_global_lists(topic_dir, ("*.mp4", "*.mov", "*.mkv"))
 
-    def _discover_stock_images(self) -> list[Path]:
-        if not self.settings.stock_footage_dir.exists():
-            return []
-        files = []
-        for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
-            files.extend(self.settings.stock_footage_dir.glob(pattern))
-        return sorted(files)
+    def _discover_stock_images(self, topic: str) -> tuple[list[Path], list[Path]]:
+        topic_dir = self._topic_dir(topic)
+        return self._topic_and_global_lists(topic_dir, ("*.jpg", "*.jpeg", "*.png", "*.webp"))
 
     def _render_background_image(self, index: int, render_dir: Path) -> Path:
         width, height = self.frame_size
@@ -253,51 +269,25 @@ class VideoBuilder:
         image.save(output_path)
         return output_path
 
-    def _render_header_label(self, index: int, header: str, render_dir: Path) -> Path:
-        width, height = self.frame_size
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-
-        font = self._load_font(self.tag_font_size, bold=True)
-        label_w = int(width * 0.3)
-        label_h = int(height * 0.09)
-        left = self.margin
-        top = self.margin
-        draw.rounded_rectangle(
-            (left, top, left + label_w, top + label_h),
-            radius=int(label_h * 0.25),
-            fill=(0, 0, 0, 150),
-        )
-        draw.text(
-            (left + int(label_w * 0.08), top + int(label_h * 0.2)),
-            header.upper(),
-            font=font,
-            fill=(255, 219, 112, 255),
-        )
-
-        output_path = render_dir / f"header_{index:02d}.png"
-        image.save(output_path)
-        return output_path
-
     def _render_subtitle_card(self, index: int, chunk_index: int, text: str, render_dir: Path) -> Path:
         width, height = self.frame_size
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
 
-        panel_height = int(height * 0.24)
+        panel_height = int(height * 0.14)
         panel_top = height - panel_height - self.margin
         draw.rounded_rectangle(
-            (self.margin, panel_top, width - self.margin, panel_top + panel_height),
+            (self.margin * 2, panel_top, width - (self.margin * 2), panel_top + panel_height),
             radius=int(panel_height * 0.16),
             fill=(5, 7, 12, 178),
         )
 
         font = self._load_font(self.subtitle_font_size, bold=True)
-        wrapped = self._wrap_text(text, font=font, max_width=width - (self.margin * 2) - 80, draw=draw)
+        wrapped = self._wrap_text(text, font=font, max_width=width - (self.margin * 4) - 80, draw=draw)
         line_gap = int(self.subtitle_font_size * 1.25)
         total_h = max(line_gap, len(wrapped) * line_gap)
         y = panel_top + int((panel_height - total_h) / 2)
-        for line in wrapped[:3]:
+        for line in wrapped[:1]:
             line_width = draw.textlength(line, font=font)
             x = int((width - line_width) / 2)
             draw.text((x, y), line, fill=(245, 247, 250, 255), font=font)
@@ -322,6 +312,107 @@ class VideoBuilder:
 
         threading.Thread(target=_loop, daemon=True).start()
         return stop_event
+
+    def _topic_and_global_lists(self, topic_dir: Path, patterns: tuple[str, ...]) -> tuple[list[Path], list[Path]]:
+        files_topic: list[Path] = []
+        files_global: list[Path] = []
+        if topic_dir.exists():
+            for pattern in patterns:
+                files_topic.extend(topic_dir.glob(pattern))
+        if self.settings.stock_footage_dir.exists():
+            for pattern in patterns:
+                files_global.extend(self.settings.stock_footage_dir.glob(pattern))
+
+        seen = {path.resolve() for path in files_topic if path.exists()}
+        fallback = sorted(path for path in files_global if path.exists() and path.resolve() not in seen)
+        return sorted(files_topic), fallback
+
+    def _topic_dir(self, topic: str) -> Path:
+        slug = self._topic_slug(topic)
+        return self.settings.stock_footage_dir / "topics" / slug
+
+    @staticmethod
+    def _topic_slug(value: str, max_len: int = 64) -> str:
+        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
+        while "__" in slug:
+            slug = slug.replace("__", "_")
+        return slug[:max_len] or "topic"
+
+    @staticmethod
+    def _section_cue_text(header: str, body: str) -> str:
+        text = body.strip()
+        if not text:
+            return ""
+        first_sentence = text.split(".")[0].strip()
+        words = first_sentence.split()
+        short = " ".join(words[:8]) if words else first_sentence
+        # Remove structure words if present.
+        lower_header = header.strip().lower()
+        if lower_header.startswith("fact") or lower_header in {"hook", "conclusion"}:
+            return short
+        return f"{short}"
+
+    def _pick_related_file(self, files: list[Path], scene_text: str) -> Path:
+        if not files:
+            raise ValueError("No files available to select from.")
+        scene_tokens = self._tokenize(scene_text)
+        if not scene_tokens:
+            return random.choice(files)
+
+        scored = []
+        for file in files:
+            file_tokens = self._tokenize(file.stem.replace("__", " "))
+            overlap = len(scene_tokens.intersection(file_tokens))
+            score = overlap + random.random() * 0.01
+            scored.append((score, file))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[0][1]
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        tokens = {token for token in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if len(token) > 2}
+        return tokens
+
+    @staticmethod
+    def _expand_scenes(sections: list[tuple[str, str]], durations: list[float]) -> list[dict]:
+        scenes: list[dict] = []
+        max_scene_seconds = 12.0
+        for (header, body), section_duration in zip(sections, durations):
+            chunk_count = max(1, int((section_duration + max_scene_seconds - 0.01) // max_scene_seconds))
+            chunks = VideoBuilder._split_text_for_chunks(body, chunk_count)
+            chunk_duration = section_duration / max(1, len(chunks))
+            for idx, chunk in enumerate(chunks):
+                scene_header = header if idx == 0 else f"{header} (cont)"
+                scenes.append(
+                    {
+                        "header": scene_header,
+                        "body": chunk,
+                        "duration": chunk_duration,
+                    }
+                )
+
+        total_planned = sum(item["duration"] for item in scenes)
+        total_target = sum(durations)
+        if scenes:
+            scenes[-1]["duration"] += total_target - total_planned
+        return scenes
+
+    @staticmethod
+    def _split_text_for_chunks(text: str, chunks: int) -> list[str]:
+        if chunks <= 1:
+            return [text.strip()]
+        words = text.split()
+        if not words:
+            return [""]
+        bucket_size = max(1, len(words) // chunks)
+        parts = []
+        start = 0
+        for _ in range(chunks - 1):
+            end = min(len(words), start + bucket_size)
+            parts.append(" ".join(words[start:end]).strip())
+            start = end
+        parts.append(" ".join(words[start:]).strip())
+        return [part for part in parts if part]
 
     @staticmethod
     def _allocate_section_durations(total_duration: float, section_texts: list[str]) -> list[float]:

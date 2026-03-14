@@ -70,7 +70,7 @@ class ScriptGenerator:
             "- 2 to 4 minute video length\n"
             "- Structure: Hook, Fact 1..Fact 5, Conclusion\n"
             "- Facts should be accurate and easy to understand\n"
-            "- Tone: educational but entertaining\n"
+            "- Tone: educational, entertaining, and conversational for voice narration\n"
             "- Monetization-safe language\n"
             "- Create SEO-optimized but natural metadata\n"
             "Return JSON only with this schema:\n"
@@ -149,10 +149,25 @@ class ScriptGenerator:
             narration_text=narration_text,
         )
 
-    @staticmethod
-    def _build_narration_text(hook: str, facts: list[str], conclusion: str) -> str:
-        lines = [f"Hook: {hook}"]
-        for index, fact in enumerate(facts, start=1):
-            lines.append(f"Fact {index}: {fact}")
-        lines.append(f"Conclusion: {conclusion}")
+    def _build_narration_text(self, hook: str, facts: list[str], conclusion: str) -> str:
+        # Keep narration natural and varied; avoid explicit structural labels.
+        transitions = [
+            "Here is something wild:",
+            "Another surprising one:",
+            "This part is fascinating:",
+            "It gets even stranger:",
+            "And one more you will not expect:",
+        ]
+        lines = []
+        if self.settings.channel_intro_enabled and self.settings.channel_intro_text.strip():
+            lines.append(self.settings.channel_intro_text.strip())
+        lines.append(hook.strip())
+        for idx, fact in enumerate(facts):
+            cleaned = fact.strip()
+            if not cleaned:
+                continue
+            transition = transitions[min(idx, len(transitions) - 1)]
+            lines.append(f"{transition} {cleaned}")
+        if conclusion.strip():
+            lines.append(f"The big takeaway: {conclusion.strip()}")
         return "\n\n".join(lines)

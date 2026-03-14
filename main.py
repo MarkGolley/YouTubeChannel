@@ -59,7 +59,7 @@ class VideoAutomationApp:
                 self.logger.info("stage_start", extra={"stage": "stock_fetch"})
                 self.stock_fetcher.ensure_stock_assets(
                     topic=topic,
-                    seed_texts=script_package.facts,
+                    seed_texts=[script_package.hook, *script_package.facts, script_package.conclusion],
                 )
 
                 self.logger.info("stage_start", extra={"stage": "voice_generation"})
@@ -159,7 +159,7 @@ class VideoAutomationApp:
             self.logger.info("stage_start", extra={"stage": "stock_fetch_resume"})
             self.stock_fetcher.ensure_stock_assets(
                 topic=topic,
-                seed_texts=script_package.facts,
+                seed_texts=[script_package.hook, *script_package.facts, script_package.conclusion],
             )
             self.logger.info("stage_start", extra={"stage": "video_render_resume"})
             video_path = self.video_builder.build_video(script_package, audio_path)

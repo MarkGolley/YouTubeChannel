@@ -81,12 +81,15 @@ Quality mode switch:
 - `RUN_PROFILE=draft` for fast iteration
 - `RUN_PROFILE=production` for final output
 - CLI flags override env: `--draft` or `--production`
+- On-screen text overlay is off by default (`VIDEO_OVERLAY_TEXT_ENABLED=false`)
+- Branded spoken intro is enabled by default via `CHANNEL_INTRO_TEXT`
 
 ## Stock Footage Folder (`assets/stock`)
 
 - This app uses stock clips as visual B-roll behind narration.
 - If the folder is empty, it falls back to generated backgrounds only.
-- If `PEXELS_API_KEY` is set and `AUTO_FETCH_STOCK=true`, the app auto-downloads stock media from Pexels before render.
+- If `PEXELS_API_KEY` is set and `AUTO_FETCH_STOCK=true`, the app auto-downloads topic-specific stock media from Pexels before render.
+- Topic assets are stored under `assets/stock/topics/<topic-slug>` and are prioritized for that video.
 - Add royalty-safe clips to `assets/stock` in `.mp4`, `.mov`, or `.mkv`.
 - You can also add still images in `.jpg`, `.jpeg`, `.png`, `.webp` (app applies motion zoom).
 - Best results:
