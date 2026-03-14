@@ -34,6 +34,36 @@ Run once:
 python main.py --once
 ```
 
+Run once in fast draft mode:
+
+```bash
+python main.py --once --draft
+```
+
+Run once in production mode:
+
+```bash
+python main.py --once --production
+```
+
+Check pending checkpoint status:
+
+```bash
+python main.py --status
+```
+
+Run once and force resume from pending checkpoint:
+
+```bash
+python main.py --once --resume
+```
+
+Run once and ignore pending checkpoint:
+
+```bash
+python main.py --once --fresh
+```
+
 Run continuously (daily schedule from `.env`):
 
 ```bash
@@ -44,16 +74,40 @@ Fast smoke-test mode (lower render cost):
 
 - `VOICE_PROVIDER=silent`
 - `DRY_RUN=true`
-- `RENDER_WIDTH=640`
-- `RENDER_HEIGHT=360`
-- `VIDEO_FPS=12`
-- `VIDEO_PRESET=ultrafast`
+- `RUN_PROFILE=draft`
+
+Quality mode switch:
+
+- `RUN_PROFILE=draft` for fast iteration
+- `RUN_PROFILE=production` for final output
+- CLI flags override env: `--draft` or `--production`
+- Timed on-screen cue text is on by default (`VIDEO_OVERLAY_TEXT_ENABLED=true`)
+- Scene pacing is configurable (`SCENE_CHANGE_SECONDS_DRAFT`, `SCENE_CHANGE_SECONDS_PRODUCTION`)
+- Branded spoken intro is enabled by default via `CHANNEL_INTRO_TEXT`
+- When intro is enabled, the first scene is a branded intro card using `CHANNEL_NAME`
+- Stock video clips are used without replay loops; when clips run out, the renderer falls back to new images/backgrounds
+- OpenAI narration defaults to WAV output (`OPENAI_TTS_FORMAT=wav`) for more reliable playback
+
+## Stock Footage Folder (`assets/stock`)
+
+- This app uses stock clips as visual B-roll behind narration.
+- If the folder is empty, it falls back to generated backgrounds only.
+- If `PEXELS_API_KEY` is set and `AUTO_FETCH_STOCK=true`, the app auto-downloads topic-specific stock media from Pexels before render.
+- Topic assets are stored under `assets/stock/topics/<topic-slug>` and are prioritized for that video.
+- Add royalty-safe clips to `assets/stock` in `.mp4`, `.mov`, or `.mkv`.
+- You can also add still images in `.jpg`, `.jpeg`, `.png`, `.webp` (app applies motion zoom).
+- Best results:
+  - 16:9 aspect ratio
+  - 1080p
+  - 5 to 20 seconds per clip
+  - 20+ mixed clips (space, ocean, nature, labs, maps, time-lapse)
+- Keep only clips you have rights to use on YouTube.
 
 ## Production Notes
 
 - Set `DRY_RUN=false` for real YouTube uploads.
 - Restore full render settings for production (`1920x1080`, `24 fps`, `medium` or slower preset).
-- Keep `assets/stock` filled with short stock clips for more varied visuals.
+- Add `PEXELS_API_KEY` in `.env` to let the app maintain stock library automatically.
 - On first real upload, OAuth browser login is required to create `secrets/token.json`.
 - Logs are written to `logs/automation.log`.
 

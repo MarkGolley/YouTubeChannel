@@ -31,6 +31,16 @@ def _csv_env(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class NicheConfig:
     description: str = "Interesting science and world facts"
@@ -55,8 +65,33 @@ class Settings:
     openai_api_key: str
     openai_text_model: str = "gpt-4.1-mini"
     openai_tts_model: str = "gpt-4o-mini-tts"
-    openai_tts_voice: str = "alloy"
+    openai_tts_voice: str = "verse"
+    openai_tts_format: str = "wav"
+    openai_tts_speed: float = 1.03
+    openai_tts_instructions: str = (
+        "You are a high-retention YouTube science narrator. Sound warm, curious, and engaging, "
+        "with varied pace and emphasis. Use natural pauses, slight excitement on surprising points, "
+        "and avoid flat monotone delivery."
+    )
     voice_provider: str = "openai"
+    pexels_api_key: str = ""
+    auto_fetch_stock: bool = True
+    stock_min_videos: int = 10
+    stock_min_images: int = 20
+    topic_stock_min_videos: int = 4
+    topic_stock_min_images: int = 8
+    pexels_videos_per_fetch: int = 4
+    pexels_images_per_fetch: int = 6
+    pexels_timeout_seconds: int = 30
+    run_profile: str = "production"
+    video_overlay_text_enabled: bool = True
+    scene_change_seconds_draft: float = 10.0
+    scene_change_seconds_production: float = 12.0
+    channel_name: str = "Curiosity Signal"
+    channel_intro_enabled: bool = True
+    channel_intro_text: str = (
+        "Welcome to another video from Curiosity Signal, your home of fascinating science content."
+    )
 
     timezone: str = "UTC"
     schedule_hour: int = 10
@@ -82,6 +117,7 @@ class Settings:
     secrets_dir: Path = Path("secrets")
     topic_history_file: Path = Path("state/topic_history.json")
     script_archive_file: Path = Path("state/script_archive.jsonl")
+    pending_job_file: Path = Path("state/pending_job.json")
 
     youtube_credentials_file: Path = Path("secrets/client_secret.json")
     youtube_token_file: Path = Path("secrets/token.json")
@@ -107,8 +143,37 @@ class Settings:
             openai_api_key=openai_api_key,
             openai_text_model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini"),
             openai_tts_model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-            openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+            openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "verse"),
+            openai_tts_format=os.getenv("OPENAI_TTS_FORMAT", "wav"),
+            openai_tts_speed=_float_env("OPENAI_TTS_SPEED", 1.03),
+            openai_tts_instructions=os.getenv(
+                "OPENAI_TTS_INSTRUCTIONS",
+                (
+                    "You are a high-retention YouTube science narrator. Sound warm, curious, and engaging, "
+                    "with varied pace and emphasis. Use natural pauses, slight excitement on surprising points, "
+                    "and avoid flat monotone delivery."
+                ),
+            ),
             voice_provider=os.getenv("VOICE_PROVIDER", "openai"),
+            pexels_api_key=os.getenv("PEXELS_API_KEY", "").strip(),
+            auto_fetch_stock=_bool_env("AUTO_FETCH_STOCK", True),
+            stock_min_videos=_int_env("STOCK_MIN_VIDEOS", 10),
+            stock_min_images=_int_env("STOCK_MIN_IMAGES", 20),
+            topic_stock_min_videos=_int_env("TOPIC_STOCK_MIN_VIDEOS", _int_env("STOCK_MIN_VIDEOS", 10)),
+            topic_stock_min_images=_int_env("TOPIC_STOCK_MIN_IMAGES", _int_env("STOCK_MIN_IMAGES", 20)),
+            pexels_videos_per_fetch=_int_env("PEXELS_VIDEOS_PER_FETCH", 4),
+            pexels_images_per_fetch=_int_env("PEXELS_IMAGES_PER_FETCH", 6),
+            pexels_timeout_seconds=_int_env("PEXELS_TIMEOUT_SECONDS", 30),
+            run_profile=os.getenv("RUN_PROFILE", "production"),
+            video_overlay_text_enabled=_bool_env("VIDEO_OVERLAY_TEXT_ENABLED", True),
+            scene_change_seconds_draft=_float_env("SCENE_CHANGE_SECONDS_DRAFT", 10.0),
+            scene_change_seconds_production=_float_env("SCENE_CHANGE_SECONDS_PRODUCTION", 12.0),
+            channel_name=os.getenv("CHANNEL_NAME", "Curiosity Signal"),
+            channel_intro_enabled=_bool_env("CHANNEL_INTRO_ENABLED", True),
+            channel_intro_text=os.getenv(
+                "CHANNEL_INTRO_TEXT",
+                "Welcome to another video from Curiosity Signal, your home of fascinating science content.",
+            ),
             timezone=os.getenv("TIMEZONE", "UTC"),
             schedule_hour=_int_env("SCHEDULE_HOUR", 10),
             schedule_minute=_int_env("SCHEDULE_MINUTE", 0),
@@ -131,6 +196,7 @@ class Settings:
             secrets_dir=Path(os.getenv("SECRETS_DIR", "secrets")),
             topic_history_file=Path(os.getenv("TOPIC_HISTORY_FILE", "state/topic_history.json")),
             script_archive_file=Path(os.getenv("SCRIPT_ARCHIVE_FILE", "state/script_archive.jsonl")),
+            pending_job_file=Path(os.getenv("PENDING_JOB_FILE", "state/pending_job.json")),
             youtube_credentials_file=Path(
                 os.getenv("YOUTUBE_CREDENTIALS_FILE", "secrets/client_secret.json")
             ),
@@ -167,3 +233,35 @@ class Settings:
             self.output_dir / "thumbnail",
         ):
             directory.mkdir(parents=True, exist_ok=True)
+
+    def apply_profile(self, profile_override: str | None = None) -> str:
+        profile = (profile_override or self.run_profile or "production").strip().lower()
+        if profile in {"draft", "dev", "quick"}:
+            self.run_profile = "draft"
+            self.render_width = 640
+            self.render_height = 360
+            self.video_fps = 12
+            self.video_preset = "ultrafast"
+            self.stock_min_videos = min(self.stock_min_videos, 2)
+            self.stock_min_images = min(self.stock_min_images, 4)
+            self.topic_stock_min_videos = min(self.topic_stock_min_videos, 2)
+            self.topic_stock_min_images = min(self.topic_stock_min_images, 4)
+            self.pexels_videos_per_fetch = min(self.pexels_videos_per_fetch, 1)
+            self.pexels_images_per_fetch = min(self.pexels_images_per_fetch, 2)
+            return self.run_profile
+
+        if profile in {"production", "prod", "full"}:
+            self.run_profile = "production"
+            self.render_width = 1920
+            self.render_height = 1080
+            self.video_fps = 24
+            self.video_preset = "medium"
+            self.stock_min_videos = max(self.stock_min_videos, 10)
+            self.stock_min_images = max(self.stock_min_images, 20)
+            self.topic_stock_min_videos = max(self.topic_stock_min_videos, 4)
+            self.topic_stock_min_images = max(self.topic_stock_min_images, 8)
+            self.pexels_videos_per_fetch = max(self.pexels_videos_per_fetch, 4)
+            self.pexels_images_per_fetch = max(self.pexels_images_per_fetch, 6)
+            return self.run_profile
+
+        raise ValueError(f"Unsupported RUN_PROFILE: {profile}")
