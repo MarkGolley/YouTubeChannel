@@ -83,6 +83,7 @@ Quality mode switch:
 - CLI flags override env: `--draft` or `--production`
 - On-screen text overlay is off by default (`VIDEO_OVERLAY_TEXT_ENABLED=false`)
 - Branded spoken intro is enabled by default via `CHANNEL_INTRO_TEXT`
+- When intro is enabled, the first scene is a branded intro card using `CHANNEL_NAME`
 
 ## Stock Footage Folder (`assets/stock`)
 

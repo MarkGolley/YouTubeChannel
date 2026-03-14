@@ -38,9 +38,7 @@ class VideoBuilder:
         render_dir = self.settings.temp_dir / f"render_{timestamp}"
         render_dir.mkdir(parents=True, exist_ok=True)
 
-        sections = [("Hook", script_package.hook)] + [
-            (f"Fact {idx}", fact) for idx, fact in enumerate(script_package.facts, start=1)
-        ] + [("Conclusion", script_package.conclusion)]
+        sections = self._compose_sections(script_package)
 
         topic_videos, global_videos = self._discover_stock_videos(script_package.topic)
         topic_images, global_images = self._discover_stock_images(script_package.topic)
@@ -84,6 +82,7 @@ class VideoBuilder:
                 section_duration = float(scene["duration"])
                 base_clip = self._make_base_clip(
                     index=idx - 1,
+                    scene_header=header,
                     duration=section_duration,
                     scene_text=body,
                     stock_videos_topic=topic_videos,
@@ -153,6 +152,8 @@ class VideoBuilder:
         duration: float,
         render_dir: Path,
     ) -> list:
+        if header.strip().lower().startswith("intro"):
+            return []
         if not self.overlay_text_enabled:
             return []
 
@@ -171,6 +172,7 @@ class VideoBuilder:
     def _make_base_clip(
         self,
         index: int,
+        scene_header: str,
         duration: float,
         scene_text: str,
         stock_videos_topic: list[Path],
@@ -179,6 +181,13 @@ class VideoBuilder:
         stock_images_fallback: list[Path],
         render_dir: Path,
     ):
+        if scene_header.strip().lower().startswith("intro"):
+            intro_card_path = self._render_intro_card(render_dir)
+            intro_clip = ImageClip(str(intro_card_path)).with_duration(duration).with_position("center")
+            if self.is_draft:
+                return intro_clip
+            return intro_clip.with_effects([vfx.Resize(lambda t: 1.0 + 0.03 * (t / max(duration, 0.01)))])
+
         preferred_videos = stock_videos_topic or stock_videos_fallback
         preferred_images = stock_images_topic or stock_images_fallback
 
@@ -237,6 +246,83 @@ class VideoBuilder:
     def _discover_stock_images(self, topic: str) -> tuple[list[Path], list[Path]]:
         topic_dir = self._topic_dir(topic)
         return self._topic_and_global_lists(topic_dir, ("*.jpg", "*.jpeg", "*.png", "*.webp"))
+
+    def _render_intro_card(self, render_dir: Path) -> Path:
+        width, height = self.frame_size
+        image = Image.new("RGB", (width, height), color=(9, 15, 24))
+        draw = ImageDraw.Draw(image)
+
+        start, end = (8, 26, 44), (20, 88, 120)
+        for y in range(height):
+            ratio = y / max(height - 1, 1)
+            color = tuple(int(start[i] + (end[i] - start[i]) * ratio) for i in range(3))
+            draw.line([(0, y), (width, y)], fill=color, width=1)
+
+        for _ in range(24):
+            x = random.randint(-120, width - 40)
+            y = random.randint(-80, height - 40)
+            w = random.randint(100, 340)
+            h = random.randint(70, 230)
+            alpha = random.randint(15, 35)
+            overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            o_draw = ImageDraw.Draw(overlay)
+            o_draw.rounded_rectangle([(x, y), (x + w, y + h)], radius=22, fill=(255, 255, 255, alpha))
+            image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+
+        panel_w = int(width * 0.78)
+        panel_h = int(height * 0.45)
+        panel_x = int((width - panel_w) / 2)
+        panel_y = int((height - panel_h) / 2)
+        panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        p_draw = ImageDraw.Draw(panel)
+        p_draw.rounded_rectangle(
+            [(panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h)],
+            radius=max(24, int(height * 0.03)),
+            fill=(5, 10, 16, 185),
+            outline=(180, 220, 245, 100),
+            width=2,
+        )
+        image = Image.alpha_composite(image.convert("RGBA"), panel).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        channel_name = (self.settings.channel_name or "Curiosity Signal").strip()
+        tagline = (self.settings.niche.description or "Interesting science and world facts").strip()
+        headline_font = self._load_font(max(48, int(height * 0.08)), bold=True)
+        subtitle_font = self._load_font(max(24, int(height * 0.038)), bold=False)
+
+        headline_lines = self._wrap_text(
+            channel_name,
+            font=headline_font,
+            max_width=int(panel_w * 0.85),
+            draw=draw,
+        )[:2]
+        headline_gap = int(headline_font.size * 1.15)
+        headline_total_h = max(headline_gap, len(headline_lines) * headline_gap)
+        headline_start_y = panel_y + int(panel_h * 0.24) - int(headline_total_h / 2)
+        current_y = headline_start_y
+        for line in headline_lines:
+            text_w = draw.textlength(line, font=headline_font)
+            text_x = int((width - text_w) / 2)
+            draw.text((text_x, current_y), line, fill=(245, 250, 255), font=headline_font)
+            current_y += headline_gap
+
+        tagline_lines = self._wrap_text(
+            tagline,
+            font=subtitle_font,
+            max_width=int(panel_w * 0.82),
+            draw=draw,
+        )[:2]
+        tagline_gap = int(subtitle_font.size * 1.35)
+        tagline_start_y = panel_y + int(panel_h * 0.66)
+        for line in tagline_lines:
+            text_w = draw.textlength(line, font=subtitle_font)
+            text_x = int((width - text_w) / 2)
+            draw.text((text_x, tagline_start_y), line, fill=(220, 236, 248), font=subtitle_font)
+            tagline_start_y += tagline_gap
+
+        output_path = render_dir / "intro_card.png"
+        image.save(output_path)
+        return output_path
 
     def _render_background_image(self, index: int, render_dir: Path) -> Path:
         width, height = self.frame_size
@@ -340,6 +426,8 @@ class VideoBuilder:
 
     @staticmethod
     def _section_cue_text(header: str, body: str) -> str:
+        if header.strip().lower().startswith("intro"):
+            return ""
         text = body.strip()
         if not text:
             return ""
@@ -372,6 +460,15 @@ class VideoBuilder:
     def _tokenize(text: str) -> set[str]:
         tokens = {token for token in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if len(token) > 2}
         return tokens
+
+    def _compose_sections(self, script_package: ScriptPackage) -> list[tuple[str, str]]:
+        sections: list[tuple[str, str]] = []
+        if self.settings.channel_intro_enabled and self.settings.channel_intro_text.strip():
+            sections.append(("Intro", self.settings.channel_intro_text.strip()))
+        sections.append(("Hook", script_package.hook))
+        sections.extend((f"Fact {idx}", fact) for idx, fact in enumerate(script_package.facts, start=1))
+        sections.append(("Conclusion", script_package.conclusion))
+        return sections
 
     @staticmethod
     def _expand_scenes(sections: list[tuple[str, str]], durations: list[float]) -> list[dict]:
