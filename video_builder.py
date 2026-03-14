@@ -27,7 +27,11 @@ class VideoBuilder:
         self.logger = logger
         self.is_draft = self.settings.run_profile == "draft"
         self.overlay_text_enabled = bool(self.settings.video_overlay_text_enabled)
-        self.scene_change_seconds = 6.0 if self.is_draft else 8.0
+        self.scene_change_seconds = (
+            self.settings.scene_change_seconds_draft
+            if self.is_draft
+            else self.settings.scene_change_seconds_production
+        )
         self.frame_size = (self.settings.render_width, self.settings.render_height)
         self.margin = max(24, int(self.frame_size[0] * 0.05))
         self.subtitle_font_size = max(28, int(self.frame_size[1] * 0.043))
@@ -271,16 +275,12 @@ class VideoBuilder:
 
         segments = []
         chosen_video_files: list[str] = []
+        stock_file = ranked_videos[0]
         remaining = duration
-        for stock_file in ranked_videos:
-            if remaining <= 0.2:
-                break
-            try:
-                source_clip = VideoFileClip(str(stock_file)).without_audio().resized(new_size=self.frame_size)
-                available = max(0.0, source_clip.duration)
-                if available <= 0.2:
-                    source_clip.close()
-                    continue
+        try:
+            source_clip = VideoFileClip(str(stock_file)).without_audio().resized(new_size=self.frame_size)
+            available = max(0.0, source_clip.duration)
+            if available > 0.2:
                 take = min(available, remaining)
                 max_start = max(0.0, available - take)
                 start = random.uniform(0.0, max_start) if max_start > 0.0 else 0.0
@@ -295,19 +295,25 @@ class VideoBuilder:
                 used_video_files.add(stock_file.resolve())
                 chosen_video_files.append(stock_file.name)
                 remaining -= take
-            except Exception:
-                self.logger.exception("stock_footage_failed", extra={"file": str(stock_file)})
+        except Exception:
+            self.logger.exception("stock_footage_failed", extra={"file": str(stock_file)})
 
         if remaining > 0.3:
-            image_filler = self._build_image_scene_clip(
-                duration=remaining,
-                scene_text=scene_text,
-                preferred_images=preferred_images,
-                used_image_files=used_image_files,
-            )
-            if image_filler is not None:
-                segments.append(image_filler)
-                remaining = 0.0
+            if segments:
+                freeze_filler = self._freeze_last_frame_clip(segments[-1], remaining)
+                if freeze_filler is not None:
+                    segments.append(freeze_filler)
+                    remaining = 0.0
+            if remaining > 0.3:
+                image_filler = self._build_image_scene_clip(
+                    duration=remaining,
+                    scene_text=scene_text,
+                    preferred_images=preferred_images,
+                    used_image_files=used_image_files,
+                )
+                if image_filler is not None:
+                    segments.append(image_filler)
+                    remaining = 0.0
 
         if remaining > 0.3:
             bg_path = self._render_background_image(index + 1000, render_dir)
@@ -326,6 +332,17 @@ class VideoBuilder:
         if len(segments) == 1:
             return segments[0].with_duration(duration)
         return concatenate_videoclips(segments, method="compose").with_duration(duration)
+
+    @staticmethod
+    def _freeze_last_frame_clip(source_clip, duration: float):
+        if duration <= 0.0:
+            return None
+        try:
+            frame_t = max(0.0, source_clip.duration - 0.04)
+            frame = source_clip.get_frame(frame_t)
+            return ImageClip(frame).with_duration(duration).with_position("center")
+        except Exception:
+            return None
 
     def _build_image_scene_clip(
         self,

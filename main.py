@@ -360,6 +360,7 @@ def main() -> None:
             "render_height": settings.render_height,
             "video_fps": settings.video_fps,
             "video_preset": settings.video_preset,
+            "voice_provider": settings.voice_provider,
             "dry_run": settings.dry_run,
         },
     )

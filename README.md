@@ -82,9 +82,11 @@ Quality mode switch:
 - `RUN_PROFILE=production` for final output
 - CLI flags override env: `--draft` or `--production`
 - Timed on-screen cue text is on by default (`VIDEO_OVERLAY_TEXT_ENABLED=true`)
+- Scene pacing is configurable (`SCENE_CHANGE_SECONDS_DRAFT`, `SCENE_CHANGE_SECONDS_PRODUCTION`)
 - Branded spoken intro is enabled by default via `CHANNEL_INTRO_TEXT`
 - When intro is enabled, the first scene is a branded intro card using `CHANNEL_NAME`
 - Stock video clips are used without replay loops; when clips run out, the renderer falls back to new images/backgrounds
+- OpenAI narration defaults to WAV output (`OPENAI_TTS_FORMAT=wav`) for more reliable playback
 
 ## Stock Footage Folder (`assets/stock`)
 

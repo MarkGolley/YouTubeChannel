@@ -66,6 +66,7 @@ class Settings:
     openai_text_model: str = "gpt-4.1-mini"
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "verse"
+    openai_tts_format: str = "wav"
     openai_tts_speed: float = 1.03
     openai_tts_instructions: str = (
         "You are a high-retention YouTube science narrator. Sound warm, curious, and engaging, "
@@ -84,6 +85,8 @@ class Settings:
     pexels_timeout_seconds: int = 30
     run_profile: str = "production"
     video_overlay_text_enabled: bool = True
+    scene_change_seconds_draft: float = 10.0
+    scene_change_seconds_production: float = 12.0
     channel_name: str = "Curiosity Signal"
     channel_intro_enabled: bool = True
     channel_intro_text: str = (
@@ -141,6 +144,7 @@ class Settings:
             openai_text_model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini"),
             openai_tts_model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
             openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "verse"),
+            openai_tts_format=os.getenv("OPENAI_TTS_FORMAT", "wav"),
             openai_tts_speed=_float_env("OPENAI_TTS_SPEED", 1.03),
             openai_tts_instructions=os.getenv(
                 "OPENAI_TTS_INSTRUCTIONS",
@@ -162,6 +166,8 @@ class Settings:
             pexels_timeout_seconds=_int_env("PEXELS_TIMEOUT_SECONDS", 30),
             run_profile=os.getenv("RUN_PROFILE", "production"),
             video_overlay_text_enabled=_bool_env("VIDEO_OVERLAY_TEXT_ENABLED", True),
+            scene_change_seconds_draft=_float_env("SCENE_CHANGE_SECONDS_DRAFT", 10.0),
+            scene_change_seconds_production=_float_env("SCENE_CHANGE_SECONDS_PRODUCTION", 12.0),
             channel_name=os.getenv("CHANNEL_NAME", "Curiosity Signal"),
             channel_intro_enabled=_bool_env("CHANNEL_INTRO_ENABLED", True),
             channel_intro_text=os.getenv(
