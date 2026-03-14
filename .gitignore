@@ -15,6 +15,7 @@ env/
 
 # Local environment config
 .env
+secrets/*.json
 
 # IDE/editor
 .idea/
@@ -24,6 +25,8 @@ env/
 logs/
 output/
 state/
+assets/stock/*
+!assets/stock/.gitkeep
 
 # OS files
 .DS_Store

@@ -31,6 +31,16 @@ def _csv_env(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class NicheConfig:
     description: str = "Interesting science and world facts"
@@ -56,7 +66,20 @@ class Settings:
     openai_text_model: str = "gpt-4.1-mini"
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "alloy"
+    openai_tts_speed: float = 1.0
+    openai_tts_instructions: str = (
+        "Energetic educational narrator. Speak clearly, confident and natural. "
+        "Use light emphasis on surprising facts, with short pauses between sections."
+    )
     voice_provider: str = "openai"
+    pexels_api_key: str = ""
+    auto_fetch_stock: bool = True
+    stock_min_videos: int = 10
+    stock_min_images: int = 20
+    pexels_videos_per_fetch: int = 4
+    pexels_images_per_fetch: int = 6
+    pexels_timeout_seconds: int = 30
+    run_profile: str = "production"
 
     timezone: str = "UTC"
     schedule_hour: int = 10
@@ -82,6 +105,7 @@ class Settings:
     secrets_dir: Path = Path("secrets")
     topic_history_file: Path = Path("state/topic_history.json")
     script_archive_file: Path = Path("state/script_archive.jsonl")
+    pending_job_file: Path = Path("state/pending_job.json")
 
     youtube_credentials_file: Path = Path("secrets/client_secret.json")
     youtube_token_file: Path = Path("secrets/token.json")
@@ -108,7 +132,23 @@ class Settings:
             openai_text_model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini"),
             openai_tts_model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
             openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+            openai_tts_speed=_float_env("OPENAI_TTS_SPEED", 1.0),
+            openai_tts_instructions=os.getenv(
+                "OPENAI_TTS_INSTRUCTIONS",
+                (
+                    "Energetic educational narrator. Speak clearly, confident and natural. "
+                    "Use light emphasis on surprising facts, with short pauses between sections."
+                ),
+            ),
             voice_provider=os.getenv("VOICE_PROVIDER", "openai"),
+            pexels_api_key=os.getenv("PEXELS_API_KEY", "").strip(),
+            auto_fetch_stock=_bool_env("AUTO_FETCH_STOCK", True),
+            stock_min_videos=_int_env("STOCK_MIN_VIDEOS", 10),
+            stock_min_images=_int_env("STOCK_MIN_IMAGES", 20),
+            pexels_videos_per_fetch=_int_env("PEXELS_VIDEOS_PER_FETCH", 4),
+            pexels_images_per_fetch=_int_env("PEXELS_IMAGES_PER_FETCH", 6),
+            pexels_timeout_seconds=_int_env("PEXELS_TIMEOUT_SECONDS", 30),
+            run_profile=os.getenv("RUN_PROFILE", "production"),
             timezone=os.getenv("TIMEZONE", "UTC"),
             schedule_hour=_int_env("SCHEDULE_HOUR", 10),
             schedule_minute=_int_env("SCHEDULE_MINUTE", 0),
@@ -131,6 +171,7 @@ class Settings:
             secrets_dir=Path(os.getenv("SECRETS_DIR", "secrets")),
             topic_history_file=Path(os.getenv("TOPIC_HISTORY_FILE", "state/topic_history.json")),
             script_archive_file=Path(os.getenv("SCRIPT_ARCHIVE_FILE", "state/script_archive.jsonl")),
+            pending_job_file=Path(os.getenv("PENDING_JOB_FILE", "state/pending_job.json")),
             youtube_credentials_file=Path(
                 os.getenv("YOUTUBE_CREDENTIALS_FILE", "secrets/client_secret.json")
             ),
@@ -167,3 +208,31 @@ class Settings:
             self.output_dir / "thumbnail",
         ):
             directory.mkdir(parents=True, exist_ok=True)
+
+    def apply_profile(self, profile_override: str | None = None) -> str:
+        profile = (profile_override or self.run_profile or "production").strip().lower()
+        if profile in {"draft", "dev", "quick"}:
+            self.run_profile = "draft"
+            self.render_width = 960
+            self.render_height = 540
+            self.video_fps = 18
+            self.video_preset = "ultrafast"
+            self.stock_min_videos = min(self.stock_min_videos, 2)
+            self.stock_min_images = min(self.stock_min_images, 4)
+            self.pexels_videos_per_fetch = min(self.pexels_videos_per_fetch, 1)
+            self.pexels_images_per_fetch = min(self.pexels_images_per_fetch, 2)
+            return self.run_profile
+
+        if profile in {"production", "prod", "full"}:
+            self.run_profile = "production"
+            self.render_width = 1920
+            self.render_height = 1080
+            self.video_fps = 24
+            self.video_preset = "medium"
+            self.stock_min_videos = max(self.stock_min_videos, 10)
+            self.stock_min_images = max(self.stock_min_images, 20)
+            self.pexels_videos_per_fetch = max(self.pexels_videos_per_fetch, 4)
+            self.pexels_images_per_fetch = max(self.pexels_images_per_fetch, 6)
+            return self.run_profile
+
+        raise ValueError(f"Unsupported RUN_PROFILE: {profile}")

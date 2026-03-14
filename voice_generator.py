@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import struct
 import wave
 from abc import ABC, abstractmethod
@@ -25,6 +24,8 @@ class OpenAITTSProvider(TTSProvider):
         self.client = OpenAI(api_key=settings.openai_api_key)
         self.model = settings.openai_tts_model
         self.voice = settings.openai_tts_voice
+        self.speed = min(4.0, max(0.25, settings.openai_tts_speed))
+        self.instructions = settings.openai_tts_instructions
 
     def synthesize(self, text: str, output_path: Path) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,7 +33,9 @@ class OpenAITTSProvider(TTSProvider):
             model=self.model,
             voice=self.voice,
             input=text,
+            instructions=self.instructions,
             response_format="mp3",
+            speed=self.speed,
         )
         response.stream_to_file(str(output_path))
         return output_path
@@ -43,21 +46,19 @@ class SilentTTSProvider(TTSProvider):
         duration_seconds = max(8, int(len(text.split()) / 2.6))
         wav_path = output_path.with_suffix(".wav")
         wav_path.parent.mkdir(parents=True, exist_ok=True)
-        self._generate_tone_file(wav_path, duration_seconds)
+        self._generate_silence_file(wav_path, duration_seconds)
         return wav_path
 
     @staticmethod
-    def _generate_tone_file(output_path: Path, duration_seconds: int, sample_rate: int = 22_050) -> None:
-        frequency = 220.0
-        amplitude = 0.12
+    def _generate_silence_file(output_path: Path, duration_seconds: int, sample_rate: int = 22_050) -> None:
         frame_count = duration_seconds * sample_rate
         with wave.open(str(output_path), "w") as file:
             file.setnchannels(1)
             file.setsampwidth(2)
             file.setframerate(sample_rate)
             for i in range(frame_count):
-                envelope = 0.35 + 0.65 * abs(math.sin(i / sample_rate * math.pi / 4))
-                value = int(32767 * amplitude * envelope * math.sin(2 * math.pi * frequency * i / sample_rate))
+                _ = i
+                value = 0
                 file.writeframesraw(struct.pack("<h", value))
 
 
